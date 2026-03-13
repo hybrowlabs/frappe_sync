@@ -286,12 +286,19 @@ def _sync_child_tables(parent_doctype, parent_name, doc_data):
 
 
 def _handle_delete(doctype, name, log):
-	"""Handle an incoming delete event."""
+	"""Handle an incoming delete event using raw SQL to bypass all ERPNext hooks."""
 	if not frappe.db.exists(doctype, name):
 		log.db_set("status", "Skipped")
 		return
 
-	frappe.delete_doc(doctype, name, ignore_permissions=True, force=True)
+	# Delete child rows first (raw SQL to avoid any hook/validation)
+	for df in frappe.get_meta(doctype).get_table_fields():
+		frappe.db.sql(f"DELETE FROM `tab{df.options}` WHERE `parent` = %s", name)
+
+	# Delete the parent document
+	frappe.db.sql(f"DELETE FROM `tab{doctype}` WHERE `name` = %s", name)
+	frappe.clear_document_cache(doctype, name)
+
 	log.db_set("status", "Success")
 
 
