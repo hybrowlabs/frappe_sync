@@ -59,9 +59,14 @@ def on_document_change(doc, method):
 		if connection.remote_site_id == origin_site_id:
 			continue
 
-		# Skip push for Pull-only connections (they poll us instead)
 		sync_mode = frappe.db.get_value("Sync Connection", connection.name, "sync_mode") or "Push"
+
 		if sync_mode == "Pull":
+			# Pull clients poll us for changes — we don't push.
+			# But deleted docs disappear from the DB, so we must log the deletion
+			# here so the puller can find it via get_deletions_since.
+			if event == "Delete":
+				_log_deletion_for_pull(doc, origin_site_id)
 			continue
 
 		frappe.enqueue(
@@ -143,6 +148,22 @@ def push_to_remote(doc_data, connection_name, sync_event, origin_site_id, modifi
 		frappe.db.commit()
 		raise
 
+	log.flags.ignore_permissions = True
+	log.insert()
+	frappe.db.commit()
+
+
+def _log_deletion_for_pull(doc, origin_site_id):
+	"""Record a deletion in Sync Log so pull clients can discover it via get_deletions_since."""
+	log = frappe.get_doc({
+		"doctype": "Sync Log",
+		"doctype_name": doc.doctype,
+		"document_name": doc.name,
+		"event": "Delete",
+		"direction": "Outgoing",
+		"status": "Success",
+		"origin_site_id": origin_site_id,
+	})
 	log.flags.ignore_permissions = True
 	log.insert()
 	frappe.db.commit()
@@ -241,6 +262,27 @@ def pull_from_remote(connection_name):
 
 		if last_timestamp:
 			connection.db_set("last_pull_at", last_timestamp)
+
+		# Also pull deletions — deleted docs don't appear in get_changes_since
+		del_resp = _requests.get(
+			f"{base_url}/api/method/frappe_sync.frappe_sync.api.get_deletions_since",
+			headers=headers,
+			params={"since_timestamp": str(since)},
+			timeout=30,
+		)
+		if del_resp.status_code == 200:
+			for item in del_resp.json().get("message") or []:
+				doctype = item.get("doctype_name")
+				name = item.get("document_name")
+				log = _create_sync_log(doctype, name, "Delete", "Incoming", origin_site_id, None)
+				try:
+					_handle_delete(doctype, name, log)
+					frappe.db.commit()
+				except Exception:
+					frappe.db.rollback()
+					log.db_set("status", "Failed")
+					log.db_set("error", frappe.get_traceback())
+					frappe.db.commit()
 
 		connection.db_set("status", "Active")
 

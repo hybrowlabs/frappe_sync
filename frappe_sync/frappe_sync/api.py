@@ -115,6 +115,23 @@ def get_changes_since(since_timestamp):
 
 
 @frappe.whitelist()
+def get_deletions_since(since_timestamp):
+	"""Return deletion events logged since timestamp for pull-mode clients."""
+	logs = frappe.get_all(
+		"Sync Log",
+		filters={
+			"event": "Delete",
+			"direction": "Outgoing",
+			"creation": (">", since_timestamp),
+		},
+		fields=["doctype_name", "document_name", "creation"],
+		order_by="creation asc",
+		limit=100,
+	)
+	return logs
+
+
+@frappe.whitelist()
 def get_document(doctype, name):
 	"""Fetch a document for dependency resolution by a remote instance."""
 	if not frappe.db.exists(doctype, name):
