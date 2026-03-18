@@ -46,12 +46,19 @@ def on_document_change(doc, method):
 
 	settings = get_sync_settings()
 	origin_site_id = settings.site_id
+
+	event = get_event_type(method)
+
+	# Always log deletions so pull clients can discover them via get_deletions_since,
+	# regardless of whether any Push/Pull connections are configured on this server.
+	if event == "Delete":
+		_log_deletion_for_pull(doc, origin_site_id)
+
 	connections = get_enabled_connections()
 
 	if not connections:
 		return
 
-	event = get_event_type(method)
 	payload = prepare_doc_payload(doc, event)
 
 	for connection in connections:
@@ -62,11 +69,7 @@ def on_document_change(doc, method):
 		sync_mode = frappe.db.get_value("Sync Connection", connection.name, "sync_mode") or "Push"
 
 		if sync_mode == "Pull":
-			# Pull clients poll us for changes — we don't push.
-			# But deleted docs disappear from the DB, so we must log the deletion
-			# here so the puller can find it via get_deletions_since.
-			if event == "Delete":
-				_log_deletion_for_pull(doc, origin_site_id)
+			# Pull clients poll us for changes; deletion already logged above.
 			continue
 
 		frappe.enqueue(
