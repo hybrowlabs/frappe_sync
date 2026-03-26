@@ -1,7 +1,7 @@
 import frappe
 from frappe import _
 
-from frappe_sync.frappe_sync.utils import get_conflict_strategy, get_sync_settings
+from frappe_sync.frappe_sync.utils import get_conflict_strategy, get_sync_settings, get_sync_fields_for_doctype
 
 
 @frappe.whitelist()
@@ -197,12 +197,17 @@ def _handle_update(doc_data, modified_timestamp, log):
 	# this avoids SQL "Unknown column" errors from meta-fields (__onload, _user_tags, etc.)
 	# that frappe.db.set_value(dict) would blindly include.
 	local_doc = frappe.get_doc(doctype, name)
+	allowed_fields = get_sync_fields_for_doctype(doctype)
 	for key, value in doc_data.items():
-		if key not in ("name", "doctype") and not isinstance(value, list):
-			local_doc.set(key, value)
+		if key in ("name", "doctype") or isinstance(value, list):
+			continue
+		if allowed_fields and key not in allowed_fields:
+			continue
+		local_doc.set(key, value)
 	local_doc.db_update()
 
-	_sync_child_tables(doctype, name, doc_data)
+	if not allowed_fields:
+		_sync_child_tables(doctype, name, doc_data)
 
 	log.db_set("status", "Success")
 

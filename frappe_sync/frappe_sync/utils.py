@@ -43,6 +43,17 @@ def is_sync_enabled_for_doctype(doctype_name, event):
 	return False
 
 
+def get_sync_fields_for_doctype(doctype_name):
+	"""Return list of fieldnames to sync for a doctype, or empty list (= sync all fields)."""
+	settings = get_sync_settings()
+	for row in settings.synced_doctypes:
+		if row.doctype_name == doctype_name:
+			raw = (row.sync_fields or "").strip()
+			if raw:
+				return [f.strip() for f in raw.split(",") if f.strip()]
+	return []
+
+
 def get_conflict_strategy(doctype_name):
 	"""Get the conflict strategy for a given doctype."""
 	settings = get_sync_settings()
@@ -65,6 +76,7 @@ def prepare_doc_payload(doc, event):
 	"""Serialize a document for sync transmission.
 
 	Strips internal fields and includes child table data.
+	If sync_fields are configured for this doctype, only those fields are included.
 	"""
 	internal_fields = {
 		"_liked_by",

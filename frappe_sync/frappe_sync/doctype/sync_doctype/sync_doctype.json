@@ -8,7 +8,8 @@
 		"sync_insert",
 		"sync_update",
 		"sync_delete",
-		"conflict_strategy"
+		"conflict_strategy",
+		"sync_fields"
 	],
 	"fields": [
 		{
@@ -47,6 +48,12 @@
 			"in_list_view": 1,
 			"label": "Conflict Strategy",
 			"options": "Last Write Wins\nSkip"
+		},
+		{
+			"fieldname": "sync_fields",
+			"fieldtype": "Small Text",
+			"label": "Sync Only These Fields",
+			"description": "Comma-separated field names (e.g. workflow_state,status). Leave empty to sync all fields."
 		}
 	],
 	"index_web_pages_for_search": 0,
