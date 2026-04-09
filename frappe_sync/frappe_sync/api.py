@@ -223,14 +223,23 @@ def _handle_submit(doc_data, log):
 		return
 
 	current_docstatus = frappe.db.get_value(doctype, name, "docstatus")
+
+	local_doc = frappe.get_doc(doctype, name)
+	allowed_fields = get_sync_fields_for_doctype(doctype)
+	for key, value in doc_data.items():
+		if key in ("name", "doctype") or isinstance(value, list):
+			continue
+		if allowed_fields and key not in allowed_fields:
+			continue
+		local_doc.set(key, value)
+
+	# Only flip docstatus if transitioning from draft → submitted
 	if current_docstatus == 0:
-		# Update all fields + flip docstatus to 1 via db_update (safe column filtering)
-		local_doc = frappe.get_doc(doctype, name)
-		for key, value in doc_data.items():
-			if key not in ("name", "doctype") and not isinstance(value, list):
-				local_doc.set(key, value)
 		local_doc.docstatus = 1
-		local_doc.db_update()
+
+	local_doc.db_update()
+
+	if not allowed_fields:
 		_sync_child_tables(doctype, name, doc_data)
 
 	log.db_set("status", "Success")
