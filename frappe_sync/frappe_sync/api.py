@@ -226,6 +226,12 @@ def _handle_submit(doc_data, log):
 
 	local_doc = frappe.get_doc(doctype, name)
 	allowed_fields = get_sync_fields_for_doctype(doctype)
+
+	frappe.log_error(
+		title="[DEBUG] _handle_submit fields",
+		message=f"doctype={doctype} name={name}\nallowed_fields={allowed_fields}\nincoming_fields={[k for k in doc_data if not isinstance(doc_data.get(k), list)]}"
+	)
+
 	for key, value in doc_data.items():
 		if key in ("name", "doctype") or isinstance(value, list):
 			continue
