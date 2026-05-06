@@ -19,7 +19,7 @@ def receive_sync(doc_data, event, origin_site_id, modified_timestamp):
 		doc_data: JSON string of the document data
 		event: "Insert", "Update", or "Delete"
 		origin_site_id: The site_id of the instance that originated this change
-		modified_timestamp: The `modified` value from the source doc
+		modified_timestamp: The modified value from the source doc
 	"""
 	try:
 		frappe.flags.in_frappe_sync = True
@@ -151,6 +151,12 @@ def _handle_insert(doc_data, log):
 		_handle_update(doc_data, doc_data.get("modified"), log)
 		return
 
+	# Skip submitted/cancelled documents
+	if docstatus in (1, 2):
+		log.db_set("status", "Skipped")
+		log.db_set("error", f"Cannot insert submitted/cancelled {doctype} {name} (docstatus={docstatus})")
+		return
+
 	# Build scalar fields only (child tables handled separately)
 	scalar_data = {k: v for k, v in doc_data.items() if not isinstance(v, list) and k != "docstatus"}
 
@@ -181,35 +187,9 @@ def _handle_update(doc_data, modified_timestamp, log):
 		_handle_insert(doc_data, log)
 		return
 
-	conflict_strategy = get_conflict_strategy(doctype)
-	local_modified = frappe.db.get_value(doctype, name, "modified")
-
-	if conflict_strategy == "Last Write Wins":
-		if str(modified_timestamp) < str(local_modified):
-			log.db_set("status", "Skipped")
-			return
-	elif conflict_strategy == "Skip":
-		log.db_set("status", "Skipped")
-		return
-
-	# Load the existing doc and apply incoming scalar values.
-	# db_update() uses get_valid_dict() internally, so only real DB columns are written —
-	# this avoids SQL "Unknown column" errors from meta-fields (__onload, _user_tags, etc.)
-	# that frappe.db.set_value(dict) would blindly include.
-	local_doc = frappe.get_doc(doctype, name)
-	allowed_fields = get_sync_fields_for_doctype(doctype)
-	for key, value in doc_data.items():
-		if key in ("name", "doctype") or isinstance(value, list):
-			continue
-		if allowed_fields and key not in allowed_fields:
-			continue
-		local_doc.set(key, value)
-	local_doc.db_update()
-
-	if not allowed_fields:
-		_sync_child_tables(doctype, name, doc_data)
-
-	log.db_set("status", "Success")
+	# Doc already exists on V16 — do NOT override any fields
+	log.db_set("status", "Skipped")
+	log.db_set("error", f"Skipped: {doctype} {name} already exists locally. No fields overridden.")
 
 
 def _handle_submit(doc_data, log):
@@ -218,7 +198,6 @@ def _handle_submit(doc_data, log):
 	name = doc_data.get("name")
 
 	if not frappe.db.exists(doctype, name):
-		# Insert as draft first, then mark submitted
 		_handle_insert(doc_data, log)
 		return
 
@@ -227,11 +206,6 @@ def _handle_submit(doc_data, log):
 	local_doc = frappe.get_doc(doctype, name)
 	allowed_fields = get_sync_fields_for_doctype(doctype)
 
-	frappe.log_error(
-		title="[DEBUG] _handle_submit fields",
-		message=f"doctype={doctype} name={name}\nallowed_fields={allowed_fields}\nincoming_fields={[k for k in doc_data if not isinstance(doc_data.get(k), list)]}"
-	)
-
 	for key, value in doc_data.items():
 		if key in ("name", "doctype") or isinstance(value, list):
 			continue
@@ -239,7 +213,6 @@ def _handle_submit(doc_data, log):
 			continue
 		local_doc.set(key, value)
 
-	# Only flip docstatus if transitioning from draft → submitted
 	if current_docstatus == 0:
 		local_doc.docstatus = 1
 
@@ -328,12 +301,19 @@ def _handle_delete(doctype, name, log):
 		log.db_set("status", "Skipped")
 		return
 
+	# Skip if doc is submitted/cancelled
+	docstatus = frappe.db.get_value(doctype, name, "docstatus")
+	if docstatus in (1, 2):
+		log.db_set("status", "Skipped")
+		log.db_set("error", f"Cannot delete submitted/cancelled {doctype} {name} (docstatus={docstatus})")
+		return
+
 	# Delete child rows first (raw SQL to avoid any hook/validation)
 	for df in frappe.get_meta(doctype).get_table_fields():
-		frappe.db.sql(f"DELETE FROM `tab{df.options}` WHERE `parent` = %s", name)
+		frappe.db.sql(f"DELETE FROM tab{df.options} WHERE parent = %s", name)
 
 	# Delete the parent document
-	frappe.db.sql(f"DELETE FROM `tab{doctype}` WHERE `name` = %s", name)
+	frappe.db.sql(f"DELETE FROM tab{doctype} WHERE name = %s", name)
 	frappe.clear_document_cache(doctype, name)
 
 	log.db_set("status", "Success")

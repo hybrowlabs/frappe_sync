@@ -33,11 +33,18 @@ def process_failed_syncs():
 
 
 def _retry_sync(log_data):
-	"""Retry a single failed sync."""
+	"""Retry a single failed sync.
+
+	- Original failed log stays FAILED forever — no changes
+	- Every retry creates a NEW Sync Log entry (Success or Failed)
+	- Full audit trail maintained
+	"""
 	from frappe_sync.frappe_sync.sync_engine import push_to_remote
 
+	retry_count = log_data.retry_count + 1
+	doc_data = frappe.parse_json(log_data.request_payload)
+
 	try:
-		doc_data = frappe.parse_json(log_data.request_payload)
 		push_to_remote(
 			doc_data=doc_data,
 			connection_name=log_data.sync_connection,
@@ -45,19 +52,27 @@ def _retry_sync(log_data):
 			origin_site_id=log_data.origin_site_id,
 			modified_timestamp=log_data.modified_timestamp,
 		)
-		# push_to_remote creates a new Success log; mark old one resolved
-		frappe.db.set_value("Sync Log", log_data.name, "status", "Success")
+		# push_to_remote creates a new Success log automatically
+		# Original failed log — NO CHANGES, stays "Failed" forever
+
 	except Exception:
-		retry_count = log_data.retry_count + 1
-		frappe.db.set_value(
-			"Sync Log",
-			log_data.name,
-			{
-				"retry_count": retry_count,
-				"next_retry_at": _calculate_next_retry(retry_count),
-				"error": frappe.get_traceback(),
-			},
-		)
+		# Create a NEW failed log for this retry attempt
+		frappe.get_doc({
+			"doctype": "Sync Log",
+			"doctype_name": doc_data.get("doctype", ""),
+			"document_name": doc_data.get("name", ""),
+			"event": log_data.event,
+			"direction": "Outgoing",
+			"status": "Failed",
+			"sync_connection": log_data.sync_connection,
+			"origin_site_id": log_data.origin_site_id,
+			"modified_timestamp": log_data.modified_timestamp,
+			"retry_count": retry_count,
+			"next_retry_at": _calculate_next_retry(retry_count) if retry_count < MAX_RETRIES else None,
+			"error": f"Retry #{retry_count} of {log_data.name}\n{frappe.get_traceback()}",
+			"request_payload": log_data.request_payload,
+		}).insert(ignore_permissions=True)
+
 	frappe.db.commit()
 
 
