@@ -179,24 +179,11 @@ def _handle_insert(doc_data, log):
 
 
 def _handle_update(doc_data, modified_timestamp, log):
-	"""Handle an incoming update event using direct DB writes to bypass all controller hooks."""
-	doctype = doc_data.get("doctype")
-	name = doc_data.get("name")
-
-	if not frappe.db.exists(doctype, name):
-		_handle_insert(doc_data, log)
-		return
-
-	# Doc already exists on V16 — do NOT override any fields
-	log.db_set("status", "Skipped")
-	log.db_set("error", f"Skipped: {doctype} {name} already exists locally. No fields overridden.")
-
-
-def _handle_submit(doc_data, log):
-	"""Handle an incoming submit event.
+	"""Handle an incoming update event.
 	- Doc exist nahi karta: insert karega
-	- Doc exist karta hai (draft): submit karega (docstatus 0→1)
-	- Doc exist karta hai (already submitted/cancelled): SKIP — koi field override nahi
+	- Draft doc (docstatus=0): ALL fields override honge
+	- Submitted doc (docstatus=1): ONLY fields that are BOTH Allow on Submit AND in Sync Settings
+	- Cancelled doc (docstatus=2): SKIP
 	"""
 	doctype = doc_data.get("doctype")
 	name = doc_data.get("name")
@@ -205,28 +192,132 @@ def _handle_submit(doc_data, log):
 		_handle_insert(doc_data, log)
 		return
 
-	# Already submitted/cancelled — SKIP, no override
-	current_docstatus = frappe.db.get_value(doctype, name, "docstatus")
-	if current_docstatus in (1, 2):
+	local_docstatus = frappe.db.get_value(doctype, name, "docstatus")
+
+	# Cancelled doc — fully skip
+	if local_docstatus == 2:
 		log.db_set("status", "Skipped")
-		log.db_set("error", f"Skipped: {doctype} {name} is already submitted/cancelled (docstatus={current_docstatus}). No fields overridden.")
+		log.db_set("error", f"Skipped: {doctype} {name} is cancelled. No fields overridden.")
 		return
 
-	# Draft doc — submit it (docstatus 0→1)
 	local_doc = frappe.get_doc(doctype, name)
-	allowed_fields = get_sync_fields_for_doctype(doctype)
+	sync_fields = get_sync_fields_for_doctype(doctype)
 
+	# Submitted doc — only Allow on Submit fields that are ALSO in Sync Settings
+	if local_docstatus == 1:
+		meta = frappe.get_meta(doctype)
+		allow_on_submit_fields = {df.fieldname for df in meta.fields if df.allow_on_submit}
+
+		updated_fields = []
+		for key, value in doc_data.items():
+			if key in ("name", "doctype", "docstatus") or isinstance(value, list):
+				continue
+			# Must be Allow on Submit
+			if key not in allow_on_submit_fields:
+				continue
+			# Must be in Sync Settings (if sync_fields configured)
+			if sync_fields and key not in sync_fields:
+				continue
+			local_doc.set(key, value)
+			updated_fields.append(key)
+
+		if updated_fields:
+			local_doc.db_update()
+			log.db_set("status", "Success")
+			log.db_set("error", f"Submitted doc: updated only allow-on-submit fields: {', '.join(updated_fields)}")
+		else:
+			log.db_set("status", "Skipped")
+			log.db_set("error", f"Skipped: {doctype} {name} is submitted. No matching allow-on-submit fields in sync settings.")
+		return
+
+	# Draft doc — override ALL fields
+	conflict_strategy = get_conflict_strategy(doctype)
+	local_modified = frappe.db.get_value(doctype, name, "modified")
+
+	if conflict_strategy == "Last Write Wins":
+		if str(modified_timestamp) < str(local_modified):
+			log.db_set("status", "Skipped")
+			return
+	elif conflict_strategy == "Skip":
+		log.db_set("status", "Skipped")
+		return
+
+	for key, value in doc_data.items():
+		if key in ("name", "doctype") or isinstance(value, list):
+			continue
+		if sync_fields and key not in sync_fields:
+			continue
+		local_doc.set(key, value)
+	local_doc.db_update()
+
+	if not sync_fields:
+		_sync_child_tables(doctype, name, doc_data)
+
+	log.db_set("status", "Success")
+
+
+def _handle_submit(doc_data, log):
+	"""Handle an incoming submit event.
+	- Doc exist nahi karta: insert karega
+	- Doc exist karta hai (draft): submit karega (docstatus 0→1) + all fields update
+	- Doc exist karta hai (submitted): ONLY Allow on Submit + Sync Settings fields
+	- Doc exist karta hai (cancelled): SKIP
+	"""
+	doctype = doc_data.get("doctype")
+	name = doc_data.get("name")
+
+	if not frappe.db.exists(doctype, name):
+		_handle_insert(doc_data, log)
+		return
+
+	current_docstatus = frappe.db.get_value(doctype, name, "docstatus")
+
+	# Cancelled — SKIP
+	if current_docstatus == 2:
+		log.db_set("status", "Skipped")
+		log.db_set("error", f"Skipped: {doctype} {name} is cancelled.")
+		return
+
+	local_doc = frappe.get_doc(doctype, name)
+	sync_fields = get_sync_fields_for_doctype(doctype)
+
+	# Already submitted — only Allow on Submit fields that are ALSO in Sync Settings
+	if current_docstatus == 1:
+		meta = frappe.get_meta(doctype)
+		allow_on_submit_fields = {df.fieldname for df in meta.fields if df.allow_on_submit}
+
+		updated_fields = []
+		for key, value in doc_data.items():
+			if key in ("name", "doctype", "docstatus") or isinstance(value, list):
+				continue
+			if key not in allow_on_submit_fields:
+				continue
+			if sync_fields and key not in sync_fields:
+				continue
+			local_doc.set(key, value)
+			updated_fields.append(key)
+
+		if updated_fields:
+			local_doc.db_update()
+			log.db_set("status", "Success")
+			log.db_set("error", f"Submitted doc: updated only allow-on-submit fields: {', '.join(updated_fields)}")
+		else:
+			log.db_set("status", "Skipped")
+			log.db_set("error", f"Skipped: {doctype} {name} is submitted. No matching allow-on-submit fields in sync settings.")
+		return
+
+	# Draft doc — submit it (docstatus 0→1) + update all fields
 	for key, value in doc_data.items():
 		if key in ("name", "doctype", "docstatus") or isinstance(value, list):
 			continue
-		if allowed_fields and key not in allowed_fields:
+		if sync_fields and key not in sync_fields:
 			continue
 		local_doc.set(key, value)
 
 	local_doc.docstatus = 1
 	local_doc.db_update()
 
-	if not allowed_fields:
+	if not sync_fields:
 		_sync_child_tables(doctype, name, doc_data)
 
 	log.db_set("status", "Success")
