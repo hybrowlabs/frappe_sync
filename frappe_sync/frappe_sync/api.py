@@ -193,7 +193,11 @@ def _handle_update(doc_data, modified_timestamp, log):
 
 
 def _handle_submit(doc_data, log):
-	"""Handle an incoming submit event — mirrors docstatus=1 without triggering GL entries."""
+	"""Handle an incoming submit event.
+	- Doc exist nahi karta: insert karega
+	- Doc exist karta hai (draft): submit karega (docstatus 0→1)
+	- Doc exist karta hai (already submitted/cancelled): SKIP — koi field override nahi
+	"""
 	doctype = doc_data.get("doctype")
 	name = doc_data.get("name")
 
@@ -201,21 +205,25 @@ def _handle_submit(doc_data, log):
 		_handle_insert(doc_data, log)
 		return
 
+	# Already submitted/cancelled — SKIP, no override
 	current_docstatus = frappe.db.get_value(doctype, name, "docstatus")
+	if current_docstatus in (1, 2):
+		log.db_set("status", "Skipped")
+		log.db_set("error", f"Skipped: {doctype} {name} is already submitted/cancelled (docstatus={current_docstatus}). No fields overridden.")
+		return
 
+	# Draft doc — submit it (docstatus 0→1)
 	local_doc = frappe.get_doc(doctype, name)
 	allowed_fields = get_sync_fields_for_doctype(doctype)
 
 	for key, value in doc_data.items():
-		if key in ("name", "doctype") or isinstance(value, list):
+		if key in ("name", "doctype", "docstatus") or isinstance(value, list):
 			continue
 		if allowed_fields and key not in allowed_fields:
 			continue
 		local_doc.set(key, value)
 
-	if current_docstatus == 0:
-		local_doc.docstatus = 1
-
+	local_doc.docstatus = 1
 	local_doc.db_update()
 
 	if not allowed_fields:
@@ -225,23 +233,16 @@ def _handle_submit(doc_data, log):
 
 
 def _handle_cancel(doc_data, log):
-	"""Handle an incoming cancel event — mirrors docstatus=2 without triggering reversal entries."""
+	"""Handle an incoming cancel event.
+	- Sync se cancel nahi hoga — manually karo
+	- Submitted doc sync se cancel nahi hona chahiye
+	"""
 	doctype = doc_data.get("doctype")
 	name = doc_data.get("name")
 
-	if not frappe.db.exists(doctype, name):
-		log.db_set("status", "Skipped")
-		return
-
-	local_doc = frappe.get_doc(doctype, name)
-	for key, value in doc_data.items():
-		if key not in ("name", "doctype") and not isinstance(value, list):
-			local_doc.set(key, value)
-	local_doc.docstatus = 2
-	local_doc.db_update()
-	_sync_child_tables(doctype, name, doc_data)
-
-	log.db_set("status", "Success")
+	# Always SKIP — cancel must be done manually
+	log.db_set("status", "Skipped")
+	log.db_set("error", f"Skipped: Cannot cancel {doctype} {name} via sync. Cancel must be done manually.")
 
 
 def _sync_child_tables(parent_doctype, parent_name, doc_data):
