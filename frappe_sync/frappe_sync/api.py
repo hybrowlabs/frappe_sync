@@ -148,10 +148,16 @@ def _handle_insert(doc_data, log):
 	docstatus = doc_data.get("docstatus", 0)
 
 	if frappe.db.exists(doctype, name):
+		# If local doc is submitted/cancelled — skip completely
+		local_docstatus = frappe.db.get_value(doctype, name, "docstatus")
+		if local_docstatus in (1, 2):
+			log.db_set("status", "Skipped")
+			log.db_set("error", f"Skipped: {doctype} {name} already exists and is submitted/cancelled (docstatus={local_docstatus})")
+			return
 		_handle_update(doc_data, doc_data.get("modified"), log)
 		return
 
-	# Skip submitted/cancelled documents
+	# Skip incoming submitted/cancelled documents
 	if docstatus in (1, 2):
 		log.db_set("status", "Skipped")
 		log.db_set("error", f"Cannot insert submitted/cancelled {doctype} {name} (docstatus={docstatus})")
@@ -203,8 +209,14 @@ def _handle_update(doc_data, modified_timestamp, log):
 	local_doc = frappe.get_doc(doctype, name)
 	sync_fields = get_sync_fields_for_doctype(doctype)
 
-	# Submitted doc — only Allow on Submit fields that are ALSO in Sync Settings
+	# Submitted doc — only Allow on Submit fields that are ALSO specified in Sync Settings
+	# If no sync_fields configured in Sync Settings — complete skip, nothing will be written
 	if local_docstatus == 1:
+		if not sync_fields:
+			log.db_set("status", "Skipped")
+			log.db_set("error", f"Skipped: {doctype} {name} is submitted. No sync fields configured in Sync Settings.")
+			return
+
 		meta = frappe.get_meta(doctype)
 		allow_on_submit_fields = {df.fieldname for df in meta.fields if df.allow_on_submit}
 
@@ -215,8 +227,8 @@ def _handle_update(doc_data, modified_timestamp, log):
 			# Must be Allow on Submit
 			if key not in allow_on_submit_fields:
 				continue
-			# Must be in Sync Settings (if sync_fields configured)
-			if sync_fields and key not in sync_fields:
+			# Must be specified in Sync Settings sync_fields
+			if key not in sync_fields:
 				continue
 			local_doc.set(key, value)
 			updated_fields.append(key)
@@ -281,8 +293,14 @@ def _handle_submit(doc_data, log):
 	local_doc = frappe.get_doc(doctype, name)
 	sync_fields = get_sync_fields_for_doctype(doctype)
 
-	# Already submitted — only Allow on Submit fields that are ALSO in Sync Settings
+	# Already submitted — only Allow on Submit fields that are ALSO specified in Sync Settings
+	# If no sync_fields configured — complete skip
 	if current_docstatus == 1:
+		if not sync_fields:
+			log.db_set("status", "Skipped")
+			log.db_set("error", f"Skipped: {doctype} {name} is submitted. No sync fields configured in Sync Settings.")
+			return
+
 		meta = frappe.get_meta(doctype)
 		allow_on_submit_fields = {df.fieldname for df in meta.fields if df.allow_on_submit}
 
@@ -292,7 +310,7 @@ def _handle_submit(doc_data, log):
 				continue
 			if key not in allow_on_submit_fields:
 				continue
-			if sync_fields and key not in sync_fields:
+			if key not in sync_fields:
 				continue
 			local_doc.set(key, value)
 			updated_fields.append(key)
