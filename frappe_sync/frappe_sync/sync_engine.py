@@ -40,6 +40,14 @@ def on_document_change(doc, method):
 	if doc.doctype in EXCLUDED_DOCTYPES:
 		return
 
+	# Prevent double log: after_insert already fires, skip on_update for same doc
+	insert_flag = f"sync_just_inserted{doc.doctype}_{doc.name}"
+	if method == "after_insert":
+		frappe.flags[insert_flag] = True
+	elif method == "on_update" and frappe.flags.get(insert_flag):
+		frappe.flags.pop(insert_flag, None)
+		return
+
 	# Skip if sync is not enabled for this doctype + event
 	if not is_sync_enabled_for_doctype(doc.doctype, method):
 		return
@@ -256,12 +264,16 @@ def pull_from_remote(connection_name):
 				else:
 					_handle_update(doc_data, modified_timestamp, log)
 				frappe.db.commit()
-				last_timestamp = modified_timestamp
 			except Exception:
 				frappe.db.rollback()
 				log.db_set("status", "Failed")
 				log.db_set("error", frappe.get_traceback())
 				frappe.db.commit()
+
+			# Always update last_timestamp — even for Skipped docs
+			# This prevents same docs from being pulled again and again
+			if modified_timestamp:
+				last_timestamp = modified_timestamp
 
 		if last_timestamp:
 			connection.db_set("last_pull_at", last_timestamp)

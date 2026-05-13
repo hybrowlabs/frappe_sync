@@ -104,11 +104,20 @@ def get_changes_since(since_timestamp):
 					"modified_timestamp": str(d.modified),
 					"doc_data": payload,
 				})
+
+				# Create outgoing log on source site (V16) so client can see it
+				_create_sync_log(
+					row.doctype_name, d.name, "Update", "Outgoing",
+					settings.site_id, str(d.modified), status="Success"
+				)
 			except Exception:
 				frappe.log_error(
 					title="Pull Sync Payload Error",
 					message=frappe.get_traceback(),
 				)
+
+	if changes:
+		frappe.db.commit()
 
 	changes.sort(key=lambda x: x["modified_timestamp"])
 	return changes[:100]
