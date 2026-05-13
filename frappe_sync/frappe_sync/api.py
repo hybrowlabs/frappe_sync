@@ -157,12 +157,7 @@ def _handle_insert(doc_data, log):
 		_handle_update(doc_data, doc_data.get("modified"), log)
 		return
 
-	# Skip incoming submitted/cancelled documents
-	if docstatus in (1, 2):
-		log.db_set("status", "Skipped")
-		log.db_set("error", f"Cannot insert submitted/cancelled {doctype} {name} (docstatus={docstatus})")
-		return
-
+	# Doc does not exist locally — insert it (even if submitted/cancelled)
 	# Build scalar fields only (child tables handled separately)
 	scalar_data = {k: v for k, v in doc_data.items() if not isinstance(v, list) and k != "docstatus"}
 
