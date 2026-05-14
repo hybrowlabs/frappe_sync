@@ -21,6 +21,7 @@ def receive_sync(doc_data, event, origin_site_id, modified_timestamp):
 		origin_site_id: The site_id of the instance that originated this change
 		modified_timestamp: The modified value from the source doc
 	"""
+	log = None
 	try:
 		frappe.flags.in_frappe_sync = True
 
@@ -54,16 +55,20 @@ def receive_sync(doc_data, event, origin_site_id, modified_timestamp):
 
 	except Exception as e:
 		frappe.db.rollback()
-		_create_sync_log(
-			doc_data.get("doctype") if isinstance(doc_data, dict) else "",
-			doc_data.get("name") if isinstance(doc_data, dict) else "",
-			event,
-			"Incoming",
-			origin_site_id,
-			modified_timestamp,
-			status="Failed",
-			error=frappe.get_traceback(),
-		)
+		if log:
+			log.db_set("status", "Failed")
+			log.db_set("error", frappe.get_traceback())
+		else:
+			_create_sync_log(
+				doc_data.get("doctype") if isinstance(doc_data, dict) else "",
+				doc_data.get("name") if isinstance(doc_data, dict) else "",
+				event,
+				"Incoming",
+				origin_site_id,
+				modified_timestamp,
+				status="Failed",
+				error=frappe.get_traceback(),
+			)
 		frappe.db.commit()
 		frappe.throw(_("Sync failed: {0}").format(str(e)))
 
@@ -249,7 +254,7 @@ def _handle_update(doc_data, modified_timestamp, log):
 	local_modified = frappe.db.get_value(doctype, name, "modified")
 
 	if conflict_strategy == "Last Write Wins":
-		if str(modified_timestamp) < str(local_modified):
+		if str(modified_timestamp) <= str(local_modified):
 			log.db_set("status", "Skipped")
 			return
 	elif conflict_strategy == "Skip":

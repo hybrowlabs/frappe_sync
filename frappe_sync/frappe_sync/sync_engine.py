@@ -40,12 +40,24 @@ def on_document_change(doc, method):
 	if doc.doctype in EXCLUDED_DOCTYPES:
 		return
 
-	# Prevent double log: after_insert already fires, skip on_update for same doc
-	insert_flag = f"sync_just_inserted{doc.doctype}_{doc.name}"
+	# on_update fires as a side-effect of every save, including submit and cancel.
+	# Submitted/cancelled docs have dedicated hooks (on_submit, on_cancel,
+	# on_update_after_submit), so skip on_update for them to avoid double-logging.
+	if method == "on_update" and (doc.docstatus or 0) != 0:
+		return
+
+	# after_insert is immediately followed by on_update within the same insert() call.
+	# Use doc.flags (tied to the doc instance) to skip the redundant on_update.
 	if method == "after_insert":
-		frappe.flags[insert_flag] = True
-	elif method == "on_update" and frappe.flags.get(insert_flag):
-		frappe.flags.pop(insert_flag, None)
+		doc.flags.frappe_sync_inserted = True
+	elif method == "on_update" and doc.flags.get("frappe_sync_inserted"):
+		return
+
+	# on_submit is immediately followed by on_update_after_submit within submit().
+	# Skip the redundant on_update_after_submit so only on_submit creates a log.
+	if method == "on_submit":
+		doc.flags.frappe_sync_submitted = True
+	elif method == "on_update_after_submit" and doc.flags.get("frappe_sync_submitted"):
 		return
 
 	# Skip if sync is not enabled for this doctype + event
@@ -244,6 +256,16 @@ def pull_from_remote(connection_name):
 			doctype = doc_data.get("doctype")
 			name = doc_data.get("name")
 			docstatus = doc_data.get("docstatus", 0)
+
+			# Skip docs already at the same version — avoids logs for unchanged docs
+			# when last_pull_at loses sub-second precision on storage and the same
+			# doc appears again in get_changes_since on the next scheduler tick.
+			if modified_timestamp and frappe.db.exists(doctype, name):
+				local_modified = frappe.db.get_value(doctype, name, "modified")
+				if str(modified_timestamp) <= str(local_modified):
+					if modified_timestamp:
+						last_timestamp = modified_timestamp
+					continue
 
 			# Determine the right event from current docstatus
 			if docstatus == 1:

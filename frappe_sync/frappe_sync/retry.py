@@ -35,9 +35,9 @@ def process_failed_syncs():
 def _retry_sync(log_data):
 	"""Retry a single failed sync.
 
-	- Original failed log stays FAILED forever — no changes
-	- Every retry creates a NEW Sync Log entry (Success or Failed)
-	- Full audit trail maintained
+	Updates the original log's retry_count to MAX_RETRIES after the attempt so
+	process_failed_syncs never picks it up again (prevents infinite retry loop).
+	On failure a new Sync Log is created to preserve the audit trail.
 	"""
 	from frappe_sync.frappe_sync.sync_engine import push_to_remote
 
@@ -52,11 +52,8 @@ def _retry_sync(log_data):
 			origin_site_id=log_data.origin_site_id,
 			modified_timestamp=log_data.modified_timestamp,
 		)
-		# push_to_remote creates a new Success log automatically
-		# Original failed log — NO CHANGES, stays "Failed" forever
 
 	except Exception:
-		# Create a NEW failed log for this retry attempt
 		frappe.get_doc({
 			"doctype": "Sync Log",
 			"doctype_name": doc_data.get("doctype", ""),
@@ -73,6 +70,9 @@ def _retry_sync(log_data):
 			"request_payload": log_data.request_payload,
 		}).insert(ignore_permissions=True)
 
+	# Exclude original log from future retries regardless of success/failure.
+	# Without this, process_failed_syncs keeps re-picking the same Failed log forever.
+	frappe.db.set_value("Sync Log", log_data.name, "retry_count", MAX_RETRIES)
 	frappe.db.commit()
 
 
