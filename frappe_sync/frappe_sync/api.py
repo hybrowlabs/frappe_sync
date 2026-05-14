@@ -169,6 +169,10 @@ def _handle_insert(doc_data, log):
 	# Direct DB insert — bypasses all controller hooks (before_validate, validate, etc.)
 	new_doc.db_insert()
 
+	# Preserve original modified time — prevents pull loop
+	if doc_data.get("modified"):
+		frappe.db.set_value(doctype, name, "modified", doc_data.get("modified"), update_modified=False)
+
 	# Sync child tables directly
 	_sync_child_tables(doctype, name, doc_data)
 
@@ -256,6 +260,10 @@ def _handle_update(doc_data, modified_timestamp, log):
 			continue
 		local_doc.set(key, value)
 	local_doc.db_update()
+
+	# Preserve original modified time — prevents pull loop
+	if doc_data.get("modified"):
+		frappe.db.set_value(doctype, name, "modified", doc_data.get("modified"), update_modified=False)
 
 	if not sync_fields:
 		_sync_child_tables(doctype, name, doc_data)

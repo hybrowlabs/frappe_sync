@@ -313,6 +313,7 @@ def pull_from_remote(connection_name):
 
 
 def _calculate_next_retry(retry_count):
+	print("hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh")
 	"""Exponential backoff: 1min, 5min, 15min, 1hr, 6hr."""
 	delays = [60, 300, 900, 3600, 21600]
 	delay = delays[min(retry_count, len(delays) - 1)]
