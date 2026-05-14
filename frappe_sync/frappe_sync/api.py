@@ -234,6 +234,9 @@ def _handle_update(doc_data, modified_timestamp, log):
 
 		if updated_fields:
 			local_doc.db_update()
+			# Preserve original modified time — prevents pull loop
+			if doc_data.get("modified"):
+				frappe.db.set_value(doctype, name, "modified", doc_data.get("modified"), update_modified=False)
 			log.db_set("status", "Success")
 			log.db_set("error", f"Submitted doc: updated only allow-on-submit fields: {', '.join(updated_fields)}")
 		else:
