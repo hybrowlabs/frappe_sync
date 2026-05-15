@@ -431,10 +431,10 @@ def _handle_delete(doctype, name, log):
 
 	# Delete child rows first (raw SQL to avoid any hook/validation)
 	for df in frappe.get_meta(doctype).get_table_fields():
-		frappe.db.sql(f"DELETE FROM tab{df.options} WHERE parent = %s", name)
+		frappe.db.sql(f"DELETE FROM `tab{df.options}` WHERE parent = %s", name)
 
 	# Delete the parent document
-	frappe.db.sql(f"DELETE FROM tab{doctype} WHERE name = %s", name)
+	frappe.db.sql(f"DELETE FROM `tab{doctype}` WHERE name = %s", name)
 	frappe.clear_document_cache(doctype, name)
 
 	log.db_set("status", "Success")
