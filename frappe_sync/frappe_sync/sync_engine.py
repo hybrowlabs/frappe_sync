@@ -308,9 +308,11 @@ def pull_from_remote(connection_name):
 			timeout=30,
 		)
 		if del_resp.status_code == 200:
+			last_deletion_timestamp = None
 			for item in del_resp.json().get("message") or []:
 				doctype = item.get("doctype_name")
 				name = item.get("document_name")
+				creation = item.get("creation")
 				log = _create_sync_log(doctype, name, "Delete", "Incoming", origin_site_id, None)
 				try:
 					_handle_delete(doctype, name, log)
@@ -320,6 +322,15 @@ def pull_from_remote(connection_name):
 					log.db_set("status", "Failed")
 					log.db_set("error", frappe.get_traceback())
 					frappe.db.commit()
+
+				if creation:
+					last_deletion_timestamp = creation
+
+			# Advance last_pull_at past processed deletions so the same deletion
+			# log is not returned again on the next scheduler tick.
+			if last_deletion_timestamp:
+				if not last_timestamp or str(last_deletion_timestamp) > str(last_timestamp):
+					connection.db_set("last_pull_at", last_deletion_timestamp)
 
 		connection.db_set("status", "Active")
 
